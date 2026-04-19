@@ -60,7 +60,3 @@ python main.py
 ```
 
 > Note: This project depends on WinDivert/pydivert behavior for packet interception and injection.
-
-Telegram:
-- https://t.me/projectXhttp
-- https://t.me/patterniha
