@@ -34,6 +34,12 @@ LISTEN_PORT = config["LISTEN_PORT"]
 FAKE_SNI = config["FAKE_SNI"].encode()
 CONNECT_IP = config["CONNECT_IP"]
 CONNECT_PORT = config["CONNECT_PORT"]
+OUTBOUND_TLS_SPOOF = config.get("outbound_tls_spoof", True)
+SPOOF_METHOD = config.get("spoof_method", "single")
+FINGERPRINT_RANDOMIZE = config.get("randomized_fingerprint", True)
+FRAGMENTAION_ENABLED = config.get("fragmentaion", False)
+FRAGMENT_MIN_SIZE = int(config.get("fragment_min_size", 24))
+FRAGMENT_MAX_SIZE = int(config.get("fragment_max_size", 96))
 INTERFACE_IPV4 = get_default_interface_ipv4(CONNECT_IP)
 DATA_MODE = "tls"
 BYPASS_METHOD = "wrong_seq"
@@ -122,11 +128,6 @@ async def handle(incoming_sock: socket.socket, incoming_remote_addr):
 
         # if data_mode == "http":
         #     ...
-        if DATA_MODE == "tls":
-            fake_data = ClientHelloMaker.get_client_hello_with(os.urandom(32), os.urandom(32), FAKE_SNI,
-                                                               os.urandom(32))
-        else:
-            sys.exit("impossible mode!")
         outgoing_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         outgoing_sock.setblocking(False)
         outgoing_sock.bind((INTERFACE_IPV4, 0))
@@ -134,43 +135,62 @@ async def handle(incoming_sock: socket.socket, incoming_remote_addr):
         outgoing_sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, 11)
         outgoing_sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 2)
         outgoing_sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 3)
-        src_port = outgoing_sock.getsockname()[1]
-        fake_injective_conn = FakeInjectiveConnection(outgoing_sock, INTERFACE_IPV4, CONNECT_IP, src_port, CONNECT_PORT,
-                                                      fake_data,
-                                                      BYPASS_METHOD, incoming_sock)
-        fake_injective_connections[fake_injective_conn.id] = fake_injective_conn
         try:
             await loop.sock_connect(outgoing_sock, (CONNECT_IP, CONNECT_PORT))
         except Exception:
-            fake_injective_conn.monitor = False
-            del fake_injective_connections[fake_injective_conn.id]
             outgoing_sock.close()
             incoming_sock.close()
             return
 
-        # if bypass_method == "wrong_checksum":
-        #     ...
+        if OUTBOUND_TLS_SPOOF:
+            if DATA_MODE == "tls":
+                fake_data = ClientHelloMaker.get_client_hello_with(
+                    os.urandom(32), os.urandom(32), FAKE_SNI, os.urandom(32)
+                )
+                if FINGERPRINT_RANDOMIZE:
+                    fake_data = ClientHelloMaker.randomize_fingerprint(fake_data)
+            else:
+                sys.exit("impossible mode!")
 
-        if BYPASS_METHOD == "wrong_seq":
-            try:
-                await asyncio.wait_for(fake_injective_conn.t2a_event.wait(), 2)
-                if fake_injective_conn.t2a_msg == "unexpected_close":
-                    raise ValueError("unexpected close")
-                if fake_injective_conn.t2a_msg == "fake_data_ack_recv":
-                    pass
-                else:
-                    sys.exit("impossible t2a msg!")
-            except Exception:
-                fake_injective_conn.monitor = False
-                del fake_injective_connections[fake_injective_conn.id]
-                outgoing_sock.close()
-                incoming_sock.close()
-                return
-        else:
-            sys.exit("unknown bypass method!")
+            src_port = outgoing_sock.getsockname()[1]
+            spoof_method = "fragmented_random" if FRAGMENTAION_ENABLED else SPOOF_METHOD
+            fake_injective_conn = FakeInjectiveConnection(
+                outgoing_sock,
+                INTERFACE_IPV4,
+                CONNECT_IP,
+                src_port,
+                CONNECT_PORT,
+                fake_data,
+                BYPASS_METHOD,
+                incoming_sock,
+                spoof_method=spoof_method,
+                fragment_min_size=FRAGMENT_MIN_SIZE,
+                fragment_max_size=FRAGMENT_MAX_SIZE,
+            )
+            fake_injective_connections[fake_injective_conn.id] = fake_injective_conn
 
-        fake_injective_conn.monitor = False
-        del fake_injective_connections[fake_injective_conn.id]
+            # if bypass_method == "wrong_checksum":
+            #     ...
+            if BYPASS_METHOD == "wrong_seq":
+                try:
+                    await asyncio.wait_for(fake_injective_conn.t2a_event.wait(), 2)
+                    if fake_injective_conn.t2a_msg == "unexpected_close":
+                        raise ValueError("unexpected close")
+                    if fake_injective_conn.t2a_msg == "fake_data_ack_recv":
+                        pass
+                    else:
+                        sys.exit("impossible t2a msg!")
+                except Exception:
+                    fake_injective_conn.monitor = False
+                    del fake_injective_connections[fake_injective_conn.id]
+                    outgoing_sock.close()
+                    incoming_sock.close()
+                    return
+            else:
+                sys.exit("unknown bypass method!")
+
+            fake_injective_conn.monitor = False
+            del fake_injective_connections[fake_injective_conn.id]
 
         # early_data = data[payload_index:]
         # if early_data:
@@ -216,9 +236,10 @@ async def main():
 
 
 if __name__ == "__main__":
-    w_filter = "tcp and " + "(" + "(ip.SrcAddr == " + INTERFACE_IPV4 + " and ip.DstAddr == " + CONNECT_IP + ")" + " or " + "(ip.SrcAddr == " + CONNECT_IP + " and ip.DstAddr == " + INTERFACE_IPV4 + ")" + ")"
-    fake_tcp_injector = FakeTcpInjector(w_filter, fake_injective_connections)
-    threading.Thread(target=fake_tcp_injector.run, args=(), daemon=True).start()
+    if OUTBOUND_TLS_SPOOF:
+        w_filter = "tcp and " + "(" + "(ip.SrcAddr == " + INTERFACE_IPV4 + " and ip.DstAddr == " + CONNECT_IP + ")" + " or " + "(ip.SrcAddr == " + CONNECT_IP + " and ip.DstAddr == " + INTERFACE_IPV4 + ")" + ")"
+        fake_tcp_injector = FakeTcpInjector(w_filter, fake_injective_connections)
+        threading.Thread(target=fake_tcp_injector.run, args=(), daemon=True).start()
     print("هشن شومافر تیامح دینکیم هدافتسا دازآ تنرتنیا هب یسرتسد یارب همانرب نیا زا رگا")
     print(
         "دراد امش تیامح هب زاین هک مراد رظن رد دازآ تنرتنیا هب ناریا مدرم مامت یسرتسد یارب یدایز یاه همانرب و اه هژورپ")
