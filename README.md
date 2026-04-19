@@ -61,24 +61,6 @@ python main.py
 
 > Note: This project depends on WinDivert/pydivert behavior for packet interception and injection.
 
----
-
-## GitHub Release Workflow
-
-A release workflow is included at:
-
-- `.github/workflows/release.yml`
-
-It triggers on tags like `v1.0.0`, builds a one-file binary with PyInstaller, packages artifacts, and publishes a GitHub Release.
-
----
-
-## Support
-
-USDT (BEP20): `0x76a768B53Ca77B43086946315f0BDF21156bF424`
-
-USDT (TRC20): `TU5gKvKqcXPn8itp1DouBCwcqGHMemBm8o`
-
 Telegram:
 - https://t.me/projectXhttp
 - https://t.me/patterniha
