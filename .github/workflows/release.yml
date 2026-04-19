@@ -15,8 +15,17 @@ permissions:
   contents: write
 
 jobs:
-  build-and-release:
-    runs-on: ubuntu-latest
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: linux-amd64
+            archive_name: tar
+          - os: windows-latest
+            target: windows-amd64
+            archive_name: zip
+    runs-on: ${{ matrix.os }}
     env:
       RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag_name || github.ref_name }}
     steps:
@@ -33,17 +42,66 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt pyinstaller
 
-      - name: Build binary
-        run: |
-          pyinstaller --onefile --name sni-bypass main.py
+      - name: Build binary (Linux)
+        if: runner.os == 'Linux'
+        run: pyinstaller --onefile --name sni-bypass main.py
 
-      - name: Prepare release assets
+      - name: Build binary (Windows)
+        if: runner.os == 'Windows'
+        run: pyinstaller --onefile --name sni-bypass main.py
+
+      - name: Download WinDivert DLLs (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri "https://github.com/basil00/WinDivert/releases/download/v2.2.2/WinDivert-2.2.2-A.zip" -OutFile "WinDivert.zip"
+          Expand-Archive -Path "WinDivert.zip" -DestinationPath "WinDivert" -Force
+          Copy-Item "WinDivert/WinDivert-2.2.2-A/x64/WinDivert.dll" "WinDivert64.dll"
+          Copy-Item "WinDivert/WinDivert-2.2.2-A/x86/WinDivert.dll" "WinDivert32.dll"
+
+      - name: Prepare Linux release assets
+        if: runner.os == 'Linux'
         run: |
           mkdir -p release
-          cp dist/sni-bypass release/sni-bypass-linux-amd64 || true
+          cp dist/sni-bypass release/sni-bypass-linux-amd64
           cp config.json release/config.json
           cp README.md release/README.md
           tar -czf sni-bypass-${{ env.RELEASE_TAG }}-linux-amd64.tar.gz -C release .
+
+      - name: Prepare Windows release assets
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path "release" -Force | Out-Null
+          Copy-Item "dist/sni-bypass.exe" "release/sni-bypass-windows-amd64.exe"
+          Copy-Item "config.json" "release/config.json"
+          Copy-Item "README.md" "release/README.md"
+          Copy-Item "WinDivert64.dll" "release/WinDivert64.dll"
+          Copy-Item "WinDivert32.dll" "release/WinDivert32.dll"
+          Compress-Archive -Path "release/*" -DestinationPath "sni-bypass-${{ env.RELEASE_TAG }}-windows-amd64.zip" -Force
+
+      - name: Upload Linux release artifact
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.target }}
+          path: sni-bypass-${{ env.RELEASE_TAG }}-linux-amd64.tar.gz
+
+      - name: Upload Windows release artifact
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.target }}
+          path: sni-bypass-${{ env.RELEASE_TAG }}-windows-amd64.zip
+
+  create-release:
+    runs-on: ubuntu-latest
+    needs: build
+    env:
+      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag_name || github.ref_name }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
       - name: Ensure tag exists for workflow_dispatch
         if: github.event_name == 'workflow_dispatch'
@@ -54,10 +112,17 @@ jobs:
             git push origin "${{ env.RELEASE_TAG }}"
           fi
 
+      - name: Download built assets
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          merge-multiple: true
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.RELEASE_TAG }}
           files: |
             sni-bypass-${{ env.RELEASE_TAG }}-linux-amd64.tar.gz
+            sni-bypass-${{ env.RELEASE_TAG }}-windows-amd64.zip
           generate_release_notes: true
