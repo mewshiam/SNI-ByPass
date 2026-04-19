@@ -3,6 +3,7 @@ import socket
 import sys
 import threading
 import time
+import random
 
 from pydivert import Packet
 
@@ -12,7 +13,8 @@ from injecter import TcpInjector
 
 class FakeInjectiveConnection(MonitorConnection):
     def __init__(self, sock: socket.socket, src_ip, dst_ip,
-                 src_port, dst_port, fake_data: bytes, bypass_method: str, peer_sock: socket.socket):
+                 src_port, dst_port, fake_data: bytes, bypass_method: str, peer_sock: socket.socket,
+                 spoof_method: str = "single", fragment_min_size: int = 24, fragment_max_size: int = 96):
         super().__init__(sock, src_ip, dst_ip, src_port, dst_port)
         self.fake_data = fake_data
         self.sch_fake_sent = False
@@ -22,6 +24,9 @@ class FakeInjectiveConnection(MonitorConnection):
         self.bypass_method = bypass_method
         self.peer_sock = peer_sock
         self.running_loop = asyncio.get_running_loop()
+        self.spoof_method = spoof_method
+        self.fragment_min_size = fragment_min_size
+        self.fragment_max_size = fragment_max_size
 
 
 class FakeTcpInjector(TcpInjector):
@@ -30,27 +35,56 @@ class FakeTcpInjector(TcpInjector):
         super().__init__(w_filter)
         self.connections = connections
 
+    @staticmethod
+    def _split_fragments(data: bytes, min_size: int, max_size: int) -> list[bytes]:
+        if len(data) <= max_size:
+            return [data]
+        fragments: list[bytes] = []
+        idx = 0
+        while idx < len(data):
+            remain = len(data) - idx
+            if remain <= max_size:
+                size = remain
+            else:
+                lo = max(1, min(min_size, max_size))
+                hi = max(lo, max_size)
+                size = min(remain, random.randint(lo, hi))
+            fragments.append(data[idx:idx + size])
+            idx += size
+        return fragments
+
     def fake_send_thread(self, packet: Packet, connection: FakeInjectiveConnection):
         time.sleep(0.001)
         with connection.thread_lock:
             if not connection.monitor:
                 return
 
-            packet.tcp.psh = True
-            packet.ip.packet_len = packet.ip.packet_len + len(connection.fake_data)
-            packet.tcp.payload = connection.fake_data
-            if packet.ipv4:
-                packet.ipv4.ident = (packet.ipv4.ident + 1) & 0xffff
+            fragments = [connection.fake_data]
+            if connection.spoof_method == "fragmented_random":
+                fragments = self._split_fragments(
+                    connection.fake_data,
+                    connection.fragment_min_size,
+                    connection.fragment_max_size,
+                )
+            elif connection.spoof_method != "single":
+                sys.exit("unknown spoof method!")
+
             # if connection.bypass_method == "wrong_checksum":
             #     ...
             if connection.bypass_method == "wrong_seq":
-                packet.tcp.seq_num = (connection.syn_seq + 1 - len(packet.tcp.payload)) & 0xffffffff
+                total_len = len(connection.fake_data)
+                sent = 0
+                base_packet_len = packet.ip.packet_len
+                for fragment in fragments:
+                    packet.tcp.psh = True
+                    packet.ip.packet_len = base_packet_len + len(fragment)
+                    packet.tcp.payload = fragment
+                    if packet.ipv4:
+                        packet.ipv4.ident = (packet.ipv4.ident + 1 + sent) & 0xffff
+                    packet.tcp.seq_num = (connection.syn_seq + 1 - total_len + sent) & 0xffffffff
+                    self.w.send(packet, True)
+                    sent += len(fragment)
                 connection.fake_sent = True
-                self.w.send(packet, True)
-
-
-
-
             else:
                 sys.exit("not implemented method!")
 
