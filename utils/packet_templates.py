@@ -1,4 +1,5 @@
 import struct
+import random
 
 
 class ClientHelloMaker:
@@ -23,6 +24,86 @@ class ClientHelloMaker:
         padding_ext = struct.pack("!H", 219 - len(target_sni)) + (b"\x00" * (219 - len(target_sni)))
         return cls.static1 + rnd + cls.static2 + sess_id + cls.static3 + server_name_ext + cls.static4 + key_share + cls.static5 + padding_ext
         # rnd-> [11:43)  sess_id-> [44:76) key_share-> [262+len(target_sni):294+len(target_sni))
+
+    @classmethod
+    def randomize_fingerprint(cls, client_hello_bytes: bytes) -> bytes:
+        """
+        Randomize selected ClientHello fingerprint fields while keeping SNI and
+        overall TLS validity intact.
+
+        Current randomizations:
+        - Cipher suite order.
+        - Extension order.
+        - Supported groups order (extension 0x000a).
+        """
+        data = bytearray(client_hello_bytes)
+        if len(data) < 80:
+            return client_hello_bytes
+
+        # TLS record (5) + handshake header (4) + client_version(2) + random(32)
+        ptr = 5 + 4 + 2 + 32
+        if ptr >= len(data):
+            return client_hello_bytes
+
+        # Session ID.
+        sess_len = data[ptr]
+        ptr += 1 + sess_len
+        if ptr + 2 > len(data):
+            return client_hello_bytes
+
+        # Cipher suites.
+        cs_len = struct.unpack("!H", data[ptr:ptr + 2])[0]
+        cs_start = ptr + 2
+        cs_end = cs_start + cs_len
+        if cs_end > len(data) or cs_len < 4 or cs_len % 2 != 0:
+            return client_hello_bytes
+
+        suites = [bytes(data[i:i + 2]) for i in range(cs_start, cs_end, 2)]
+        random.shuffle(suites)
+        data[cs_start:cs_end] = b"".join(suites)
+
+        ptr = cs_end
+        if ptr + 1 > len(data):
+            return client_hello_bytes
+
+        # Compression methods.
+        comp_len = data[ptr]
+        ptr += 1 + comp_len
+        if ptr + 2 > len(data):
+            return client_hello_bytes
+
+        # Extensions.
+        ext_total_len = struct.unpack("!H", data[ptr:ptr + 2])[0]
+        ext_start = ptr + 2
+        ext_end = ext_start + ext_total_len
+        if ext_end > len(data):
+            return client_hello_bytes
+
+        ext_ptr = ext_start
+        ext_parts: list[bytes] = []
+        while ext_ptr + 4 <= ext_end:
+            ext_len = struct.unpack("!H", data[ext_ptr + 2:ext_ptr + 4])[0]
+            block_end = ext_ptr + 4 + ext_len
+            if block_end > ext_end:
+                return client_hello_bytes
+
+            ext_type = struct.unpack("!H", data[ext_ptr:ext_ptr + 2])[0]
+            block = bytearray(data[ext_ptr:block_end])
+
+            # supported_groups extension (0x000a)
+            if ext_type == 0x000A and ext_len >= 4:
+                groups_len = struct.unpack("!H", block[4:6])[0]
+                if 6 + groups_len <= len(block) and groups_len % 2 == 0 and groups_len >= 4:
+                    groups = [bytes(block[i:i + 2]) for i in range(6, 6 + groups_len, 2)]
+                    random.shuffle(groups)
+                    block[6:6 + groups_len] = b"".join(groups)
+
+            ext_parts.append(bytes(block))
+            ext_ptr = block_end
+
+        random.shuffle(ext_parts)
+        data[ext_start:ext_end] = b"".join(ext_parts)
+        return bytes(data)
 
     @classmethod
     def parse_client_hello(cls, client_hello_bytes: bytes):
