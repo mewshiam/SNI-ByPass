@@ -240,10 +240,4 @@ if __name__ == "__main__":
         w_filter = "tcp and " + "(" + "(ip.SrcAddr == " + INTERFACE_IPV4 + " and ip.DstAddr == " + CONNECT_IP + ")" + " or " + "(ip.SrcAddr == " + CONNECT_IP + " and ip.DstAddr == " + INTERFACE_IPV4 + ")" + ")"
         fake_tcp_injector = FakeTcpInjector(w_filter, fake_injective_connections)
         threading.Thread(target=fake_tcp_injector.run, args=(), daemon=True).start()
-    print("هشن شومافر تیامح دینکیم هدافتسا دازآ تنرتنیا هب یسرتسد یارب همانرب نیا زا رگا")
-    print(
-        "دراد امش تیامح هب زاین هک مراد رظن رد دازآ تنرتنیا هب ناریا مدرم مامت یسرتسد یارب یدایز یاه همانرب و اه هژورپ")
-    print("\n")
-    print("USDT (BEP20): 0x76a768B53Ca77B43086946315f0BDF21156bF424\n")
-    print("@patterniha")
     asyncio.run(main())
