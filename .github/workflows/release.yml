@@ -1,0 +1,46 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller
+
+      - name: Build binary
+        run: |
+          pyinstaller --onefile --name sni-bypass main.py
+
+      - name: Prepare release assets
+        run: |
+          mkdir -p release
+          cp dist/sni-bypass release/sni-bypass-linux-amd64 || true
+          cp config.json release/config.json
+          cp README.md release/README.md
+          tar -czf sni-bypass-${{ github.ref_name }}-linux-amd64.tar.gz -C release .
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            sni-bypass-${{ github.ref_name }}-linux-amd64.tar.gz
+          generate_release_notes: true
